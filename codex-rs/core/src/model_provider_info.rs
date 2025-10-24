@@ -39,6 +39,17 @@ pub enum WireApi {
     Chat,
 }
 
+/// Authentication header format for API requests.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthHeaderFormat {
+    /// Use `Authorization: Bearer {token}` header (OpenAI standard).
+    #[default]
+    Bearer,
+    /// Use `Api-Key: {token}` header (Azure-style).
+    ApiKey,
+}
+
 /// Serializable representation of a provider definition.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ModelProviderInfo {
@@ -91,6 +102,10 @@ pub struct ModelProviderInfo {
     /// and API key (if needed) comes from the "env_key" environment variable.
     #[serde(default)]
     pub requires_openai_auth: bool,
+
+    /// Authentication header format to use for API requests.
+    #[serde(default)]
+    pub auth_header_format: AuthHeaderFormat,
 }
 
 impl ModelProviderInfo {
@@ -128,7 +143,11 @@ impl ModelProviderInfo {
         let mut builder = client.post(url);
 
         if let Some(auth) = effective_auth.as_ref() {
-            builder = builder.bearer_auth(auth.get_token().await?);
+            let token = auth.get_token().await?;
+            builder = match self.auth_header_format {
+                AuthHeaderFormat::Bearer => builder.bearer_auth(token),
+                AuthHeaderFormat::ApiKey => builder.header("Api-Key", token),
+            };
         }
 
         Ok(self.apply_http_headers(builder))
@@ -307,6 +326,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: true,
+                auth_header_format: AuthHeaderFormat::Bearer,
             },
         ),
         (BUILT_IN_OSS_MODEL_PROVIDER_ID, create_oss_provider()),
@@ -352,6 +372,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         requires_openai_auth: false,
+        auth_header_format: AuthHeaderFormat::Bearer,
     }
 }
 
@@ -392,6 +413,7 @@ base_url = "http://localhost:11434/v1"
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            auth_header_format: AuthHeaderFormat::Bearer,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -422,6 +444,7 @@ query_params = { api-version = "2025-04-01-preview" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            auth_header_format: AuthHeaderFormat::Bearer,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -455,6 +478,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            auth_header_format: AuthHeaderFormat::Bearer,
         };
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
@@ -478,6 +502,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: false,
+                auth_header_format: AuthHeaderFormat::Bearer,
             }
         }
 
@@ -511,6 +536,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             requires_openai_auth: false,
+            auth_header_format: AuthHeaderFormat::Bearer,
         };
         assert!(named_provider.is_azure_responses_endpoint());
 
@@ -526,5 +552,34 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn test_deserialize_auth_header_format() {
+        let provider_toml = r#"
+name = "Test Provider"
+base_url = "https://example.com"
+env_key = "API_KEY"
+auth_header_format = "apikey"
+        "#;
+        let expected_provider = ModelProviderInfo {
+            name: "Test Provider".into(),
+            base_url: Some("https://example.com".into()),
+            env_key: Some("API_KEY".into()),
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            auth_header_format: AuthHeaderFormat::ApiKey,
+        };
+
+        let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+        assert_eq!(expected_provider, provider);
     }
 }
